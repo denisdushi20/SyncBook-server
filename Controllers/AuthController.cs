@@ -2,6 +2,8 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using System.Text.RegularExpressions;
+using Google.Apis.Auth;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MongoDB.Bson;
 using Microsoft.IdentityModel.Tokens;
@@ -9,6 +11,8 @@ using MongoDB.Driver;
 using SyncBook.Server.Data;
 using SyncBook.Server.Models;
 using SyncBook.Server.Models.Dtos;
+using SyncBook.Server.Services;
+using SyncBook.Server.Validation;
 
 namespace SyncBook.Server.Controllers;
 
@@ -18,11 +22,19 @@ public class AuthController : ControllerBase
 {
     private readonly MongoDbContext _db;
     private readonly IConfiguration _configuration;
+    private readonly CurrentUserService _currentUser;
+    private readonly IEmailService _emailService;
 
-    public AuthController(MongoDbContext db, IConfiguration configuration)
+    public AuthController(
+        MongoDbContext db,
+        IConfiguration configuration,
+        CurrentUserService currentUser,
+        IEmailService emailService)
     {
         _db = db;
         _configuration = configuration;
+        _currentUser = currentUser;
+        _emailService = emailService;
     }
 
     [HttpGet("check-email")]
@@ -57,6 +69,56 @@ public class AuthController : ControllerBase
         {
             Available = !taken
         });
+    }
+
+    [HttpPost("send-registration-code")]
+    public async Task<IActionResult> SendRegistrationCode([FromBody] SendRegistrationCodeRequest request)
+    {
+        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+        if (!normalizedEmail.Contains('@'))
+        {
+            return BadRequest(new { message = "A valid email address is required." });
+        }
+
+        var existingUser = await _db.Users
+            .Find(u => u.Email == normalizedEmail)
+            .FirstOrDefaultAsync();
+
+        if (existingUser is not null)
+        {
+            return Conflict(new { message = "An account with this email already exists." });
+        }
+
+        await InvalidateActiveCodesAsync(normalizedEmail, VerificationCodePurpose.Registration);
+        var code = VerificationCodeGenerator.GenerateSixDigitCode();
+        await _db.VerificationCodes.InsertOneAsync(new VerificationCode
+        {
+            Email = normalizedEmail,
+            Purpose = VerificationCodePurpose.Registration,
+            CodeHash = BCrypt.Net.BCrypt.HashPassword(code),
+            ExpiresAt = DateTime.UtcNow.AddMinutes(15)
+        });
+
+        await _emailService.SendVerificationCodeEmailAsync(
+            normalizedEmail,
+            code,
+            VerificationEmailPurpose.Registration);
+
+        return Ok(new { message = "Verification code sent. Check your email." });
+    }
+
+    [HttpPost("verify-registration-code")]
+    public async Task<IActionResult> VerifyRegistrationCode([FromBody] VerifyCodeRequest request)
+    {
+        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+        var matched = await FindValidCodeAsync(normalizedEmail, VerificationCodePurpose.Registration, request.Code);
+        if (matched is null)
+        {
+            return BadRequest(new { message = "Invalid or expired verification code." });
+        }
+
+        await MarkCodeUsedAsync(matched.Id);
+        return Ok(new { message = "Email verified successfully.", email = normalizedEmail });
     }
 
     [HttpPost("register")]
@@ -96,7 +158,8 @@ public class AuthController : ControllerBase
             FullName = request.FullName.Trim(),
             Email = normalizedEmail,
             Password = BCrypt.Net.BCrypt.HashPassword(request.Password),
-            Role = request.Role
+            Role = request.Role,
+            AuthProvider = AuthProvider.Local
         };
 
         await _db.Users.InsertOneAsync(user);
@@ -118,6 +181,7 @@ public class AuthController : ControllerBase
                     .Where(s => !string.IsNullOrWhiteSpace(s.Name))
                     .Select(s => new BusinessService
                     {
+                        Id = ObjectId.GenerateNewId().ToString(),
                         Name = s.Name.Trim(),
                         DurationMinutes = s.DurationMinutes
                     })
@@ -158,7 +222,8 @@ public class AuthController : ControllerBase
             .Find(u => u.Email == normalizedEmail)
             .FirstOrDefaultAsync();
 
-        if (user is null || !BCrypt.Net.BCrypt.Verify(request.Password, user.Password))
+        if (user is null || user.AuthProvider != AuthProvider.Local || string.IsNullOrEmpty(user.Password)
+            || !BCrypt.Net.BCrypt.Verify(request.Password, user.Password))
         {
             return Unauthorized(new { message = "Invalid email or password." });
         }
@@ -188,6 +253,214 @@ public class AuthController : ControllerBase
                 BusinessId = businessId
             }
         });
+    }
+
+    [Authorize]
+    [HttpGet("me")]
+    public async Task<ActionResult<UserProfileResponse>> GetCurrentUser()
+    {
+        if (string.IsNullOrEmpty(_currentUser.UserId))
+        {
+            return Unauthorized();
+        }
+
+        var user = await _db.Users
+            .Find(u => u.Id == _currentUser.UserId)
+            .FirstOrDefaultAsync();
+
+        if (user is null)
+        {
+            return NotFound(new { message = "User not found." });
+        }
+
+        var businessId = await ResolveBusinessIdAsync(user);
+
+        return Ok(new UserProfileResponse
+        {
+            Id = user.Id,
+            FullName = user.FullName,
+            Email = user.Email,
+            Role = user.Role,
+            AuthProvider = user.AuthProvider,
+            BusinessId = businessId
+        });
+    }
+
+    [Authorize]
+    [HttpPut("password")]
+    public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
+    {
+        if (string.IsNullOrEmpty(_currentUser.UserId))
+        {
+            return Unauthorized();
+        }
+
+        var user = await _db.Users
+            .Find(u => u.Id == _currentUser.UserId)
+            .FirstOrDefaultAsync();
+
+        if (user is null)
+        {
+            return NotFound(new { message = "User not found." });
+        }
+
+        if (user.AuthProvider != AuthProvider.Local || string.IsNullOrEmpty(user.Password))
+        {
+            return BadRequest(new { message = "Password is managed by your sign-in provider." });
+        }
+
+        if (!BCrypt.Net.BCrypt.Verify(request.CurrentPassword, user.Password))
+        {
+            return BadRequest(new { message = "Current password is incorrect." });
+        }
+
+        var update = Builders<User>.Update.Set(u => u.Password, BCrypt.Net.BCrypt.HashPassword(request.NewPassword));
+        await _db.Users.UpdateOneAsync(u => u.Id == user.Id, update);
+
+        return NoContent();
+    }
+
+    [HttpPost("forgot-password")]
+    public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request)
+    {
+        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+        var user = await _db.Users
+            .Find(u => u.Email == normalizedEmail)
+            .FirstOrDefaultAsync();
+
+        if (user is not null && user.AuthProvider == AuthProvider.Local)
+        {
+            await InvalidateActiveCodesAsync(normalizedEmail, VerificationCodePurpose.PasswordReset);
+            var code = VerificationCodeGenerator.GenerateSixDigitCode();
+            await _db.VerificationCodes.InsertOneAsync(new VerificationCode
+            {
+                Email = normalizedEmail,
+                Purpose = VerificationCodePurpose.PasswordReset,
+                UserId = user.Id,
+                CodeHash = BCrypt.Net.BCrypt.HashPassword(code),
+                ExpiresAt = DateTime.UtcNow.AddMinutes(15)
+            });
+
+            await _emailService.SendVerificationCodeEmailAsync(
+                normalizedEmail,
+                code,
+                VerificationEmailPurpose.PasswordReset);
+        }
+
+        return Ok(new { message = "If an account exists for that email, a verification code has been sent." });
+    }
+
+    [HttpPost("reset-password")]
+    public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest request)
+    {
+        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+        var matched = await FindValidCodeAsync(normalizedEmail, VerificationCodePurpose.PasswordReset, request.Code);
+        if (matched is null)
+        {
+            return BadRequest(new { message = "Invalid or expired verification code." });
+        }
+
+        var user = await _db.Users
+            .Find(u => u.Id == matched.UserId)
+            .FirstOrDefaultAsync();
+
+        if (user is null || user.AuthProvider != AuthProvider.Local)
+        {
+            return BadRequest(new { message = "Unable to reset password for this account." });
+        }
+
+        var passwordUpdate = Builders<User>.Update.Set(u => u.Password, BCrypt.Net.BCrypt.HashPassword(request.NewPassword));
+        await _db.Users.UpdateOneAsync(u => u.Id == user.Id, passwordUpdate);
+        await MarkCodeUsedAsync(matched.Id);
+
+        return Ok(new { message = "Password has been reset. You can sign in now." });
+    }
+
+    [HttpPost("google")]
+    public async Task<ActionResult<AuthResponse>> GoogleLogin([FromBody] GoogleLoginRequest request)
+    {
+        var clientId = _configuration["Google:ClientId"];
+        if (string.IsNullOrWhiteSpace(clientId) || clientId == "YOUR_GOOGLE_CLIENT_ID")
+        {
+            return BadRequest(new { message = "Google Sign-In is not configured." });
+        }
+
+        GoogleJsonWebSignature.Payload payload;
+        try
+        {
+            payload = await GoogleJsonWebSignature.ValidateAsync(
+                request.IdToken,
+                new GoogleJsonWebSignature.ValidationSettings { Audience = [clientId] });
+        }
+        catch
+        {
+            return Unauthorized(new { message = "Invalid Google token." });
+        }
+
+        if (string.IsNullOrWhiteSpace(payload.Email) || string.IsNullOrWhiteSpace(payload.Subject))
+        {
+            return BadRequest(new { message = "Google account did not provide required profile information." });
+        }
+
+        var normalizedEmail = payload.Email.Trim().ToLowerInvariant();
+        var user = await _db.Users
+            .Find(u => u.GoogleId == payload.Subject || u.Email == normalizedEmail)
+            .FirstOrDefaultAsync();
+
+        if (user is null)
+        {
+            user = new User
+            {
+                FullName = string.IsNullOrWhiteSpace(payload.Name) ? normalizedEmail : payload.Name.Trim(),
+                Email = normalizedEmail,
+                Password = null,
+                Role = UserRole.Customer,
+                AuthProvider = AuthProvider.Google,
+                GoogleId = payload.Subject
+            };
+
+            await _db.Users.InsertOneAsync(user);
+        }
+        else if (user.AuthProvider == AuthProvider.Local)
+        {
+            return Conflict(new { message = "An account with this email already exists. Sign in with email and password." });
+        }
+        else if (string.IsNullOrEmpty(user.GoogleId))
+        {
+            var linkUpdate = Builders<User>.Update.Set(u => u.GoogleId, payload.Subject);
+            await _db.Users.UpdateOneAsync(u => u.Id == user.Id, linkUpdate);
+            user.GoogleId = payload.Subject;
+        }
+
+        var businessId = await ResolveBusinessIdAsync(user);
+        var token = GenerateJwtToken(user, businessId);
+
+        return Ok(new AuthResponse
+        {
+            Token = token,
+            User = new UserSnapshot
+            {
+                Id = user.Id,
+                FullName = user.FullName,
+                Email = user.Email,
+                Role = user.Role,
+                BusinessId = businessId
+            }
+        });
+    }
+
+    private async Task<string?> ResolveBusinessIdAsync(User user)
+    {
+        if (user.Role != UserRole.BusinessOwner)
+        {
+            return null;
+        }
+
+        var business = await _db.Businesses
+            .Find(b => b.OwnerId == user.Id)
+            .FirstOrDefaultAsync();
+
+        return business?.Id;
     }
 
     private async Task<bool> IsBusinessNameTakenAsync(string name)
@@ -227,15 +500,39 @@ public class AuthController : ControllerBase
             return "Working hours for all 7 days are required.";
         }
 
-        foreach (var day in business.WorkingHours)
-        {
-            if (day.IsOpen && (string.IsNullOrWhiteSpace(day.OpenTime) || string.IsNullOrWhiteSpace(day.CloseTime)))
-            {
-                return $"Open and close times are required for {day.Day} when the business is open.";
-            }
-        }
+        return WorkingHoursValidator.Validate(business.WorkingHours);
+    }
 
-        return null;
+    private async Task InvalidateActiveCodesAsync(string email, VerificationCodePurpose purpose)
+    {
+        var filter = Builders<VerificationCode>.Filter.And(
+            Builders<VerificationCode>.Filter.Eq(c => c.Email, email),
+            Builders<VerificationCode>.Filter.Eq(c => c.Purpose, purpose),
+            Builders<VerificationCode>.Filter.Eq(c => c.UsedAt, null));
+
+        var update = Builders<VerificationCode>.Update.Set(c => c.UsedAt, DateTime.UtcNow);
+        await _db.VerificationCodes.UpdateManyAsync(filter, update);
+    }
+
+    private async Task<VerificationCode?> FindValidCodeAsync(
+        string email,
+        VerificationCodePurpose purpose,
+        string code)
+    {
+        var codes = await _db.VerificationCodes
+            .Find(c => c.Email == email
+                && c.Purpose == purpose
+                && c.UsedAt == null
+                && c.ExpiresAt > DateTime.UtcNow)
+            .ToListAsync();
+
+        return codes.FirstOrDefault(c => BCrypt.Net.BCrypt.Verify(code, c.CodeHash));
+    }
+
+    private async Task MarkCodeUsedAsync(string codeId)
+    {
+        var update = Builders<VerificationCode>.Update.Set(c => c.UsedAt, DateTime.UtcNow);
+        await _db.VerificationCodes.UpdateOneAsync(c => c.Id == codeId, update);
     }
 
     private string GenerateJwtToken(User user, string? businessId)

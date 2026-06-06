@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using MongoDB.Driver;
 using SyncBook.Server.Data;
+using SyncBook.Server.Mapping;
 using SyncBook.Server.Models;
 using SyncBook.Server.Models.Dtos;
 
@@ -25,7 +26,7 @@ public class BusinessController : ControllerBase
             .SortBy(b => b.Name)
             .ToListAsync();
 
-        return Ok(businesses.Select(MapToPublicDto).ToList());
+        return Ok(businesses.Select(BusinessMapper.ToPublicDto).ToList());
     }
 
     [HttpGet("{id}")]
@@ -40,19 +41,6 @@ public class BusinessController : ControllerBase
             return NotFound(new { message = "Business not found." });
         }
 
-        return Ok(MapToPublicDto(business));
+        return Ok(BusinessMapper.ToPublicDto(business));
     }
-
-    private static BusinessPublicDto MapToPublicDto(Business business) => new()
-    {
-        Id = business.Id,
-        Name = business.Name,
-        Email = business.Email,
-        Phone = business.Phone,
-        Description = business.Description,
-        Category = business.Category,
-        Image = business.Image,
-        Services = business.Services ?? [],
-        WorkingHours = business.WorkingHours ?? []
-    };
 }

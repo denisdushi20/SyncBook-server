@@ -13,8 +13,13 @@ public class User
 
     public string Email { get; set; } = string.Empty;
 
-    public string Password { get; set; } = string.Empty;
+    public string? Password { get; set; }
 
     [BsonRepresentation(BsonType.String)]
     public UserRole Role { get; set; }
+
+    [BsonRepresentation(BsonType.String)]
+    public AuthProvider AuthProvider { get; set; } = AuthProvider.Local;
+
+    public string? GoogleId { get; set; }
 }

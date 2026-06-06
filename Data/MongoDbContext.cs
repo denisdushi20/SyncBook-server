@@ -35,4 +35,12 @@ public class MongoDbContext
     public IMongoCollection<User> Users => _database.GetCollection<User>("users");
 
     public IMongoCollection<Business> Businesses => _businesses;
+
+    public IMongoCollection<Appointment> Appointments => _database.GetCollection<Appointment>("appointments");
+
+    public IMongoCollection<PasswordResetToken> PasswordResetTokens =>
+        _database.GetCollection<PasswordResetToken>("passwordResetTokens");
+
+    public IMongoCollection<VerificationCode> VerificationCodes =>
+        _database.GetCollection<VerificationCode>("verificationCodes");
 }

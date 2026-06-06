@@ -1,12 +1,19 @@
 using System.Text;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.IdentityModel.Tokens;
+using SyncBook.Server.Authorization;
 using SyncBook.Server.Data;
+using SyncBook.Server.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddSingleton<MongoDbContext>();
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<CurrentUserService>();
+builder.Services.AddScoped<IEmailService, SmtpEmailService>();
+builder.Services.AddScoped<IAuthorizationHandler, BusinessOwnerAuthorizationHandler>();
 builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
@@ -35,7 +42,11 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
         };
     });
 
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy("BusinessOwner", policy =>
+        policy.Requirements.Add(new BusinessOwnerRequirement()));
+});
 
 builder.Services.AddCors(options =>
 {
