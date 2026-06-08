@@ -31,15 +31,36 @@ public static class BusinessMapper
         WorkingHours = business.WorkingHours ?? []
     };
 
-    public static AppointmentDto ToDto(Appointment appointment) => new()
+    public static AppointmentDto ToDto(Appointment appointment, string? staffName = null) => new()
     {
         Id = appointment.Id,
         BusinessId = appointment.BusinessId,
         CustomerName = appointment.CustomerName,
         CustomerEmail = appointment.CustomerEmail,
+        CustomerPhone = appointment.CustomerPhone,
+        ServiceId = appointment.ServiceId,
         ServiceName = appointment.ServiceName,
         StartUtc = appointment.StartUtc,
         EndUtc = appointment.EndUtc,
+        BufferMinutes = appointment.BufferMinutes,
+        StaffId = appointment.StaffId,
+        StaffName = staffName,
         Status = appointment.Status
+    };
+
+    public static StaffMemberDto ToStaffDto(StaffMember staff, string fullName) => new()
+    {
+        Id = staff.Id,
+        UserId = staff.UserId,
+        BusinessId = staff.BusinessId,
+        FullName = fullName,
+        IsBookable = staff.IsBookable,
+        WeeklySchedule = (staff.WeeklySchedule ?? []).Select(e => new StaffWeeklyScheduleEntryDto
+        {
+            DayOfWeek = e.DayOfWeek,
+            StartTime = e.StartTime,
+            EndTime = e.EndTime,
+            IsAvailable = e.IsAvailable
+        }).ToList()
     };
 }

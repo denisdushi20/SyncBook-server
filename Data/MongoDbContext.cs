@@ -38,6 +38,9 @@ public class MongoDbContext
 
     public IMongoCollection<Appointment> Appointments => _database.GetCollection<Appointment>("appointments");
 
+    public IMongoCollection<StaffMember> StaffMembers =>
+        _database.GetCollection<StaffMember>("staffcollection");
+
     public IMongoCollection<PasswordResetToken> PasswordResetTokens =>
         _database.GetCollection<PasswordResetToken>("passwordResetTokens");
 

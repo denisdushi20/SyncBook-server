@@ -4,8 +4,7 @@ namespace SyncBook.Server.Models.Dtos;
 
 public class ChangePasswordRequest
 {
-    [Required]
-    public string CurrentPassword { get; set; } = string.Empty;
+    public string? CurrentPassword { get; set; }
 
     [Required]
     [MinLength(6)]

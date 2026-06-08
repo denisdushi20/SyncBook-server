@@ -199,6 +199,7 @@ public class AuthController : ControllerBase
 
             await _db.Businesses.InsertOneAsync(business);
             businessId = business.Id;
+            await ProvisionOwnerStaffAsync(user.Id, business.Id, business.WorkingHours);
         }
 
         return CreatedAtAction(nameof(Register), new RegisterResponse
@@ -222,7 +223,7 @@ public class AuthController : ControllerBase
             .Find(u => u.Email == normalizedEmail)
             .FirstOrDefaultAsync();
 
-        if (user is null || user.AuthProvider != AuthProvider.Local || string.IsNullOrEmpty(user.Password)
+        if (user is null || string.IsNullOrEmpty(user.Password)
             || !BCrypt.Net.BCrypt.Verify(request.Password, user.Password))
         {
             return Unauthorized(new { message = "Invalid email or password." });
@@ -304,14 +305,17 @@ public class AuthController : ControllerBase
             return NotFound(new { message = "User not found." });
         }
 
-        if (user.AuthProvider != AuthProvider.Local || string.IsNullOrEmpty(user.Password))
+        if (user.AuthProvider == AuthProvider.Local)
         {
-            return BadRequest(new { message = "Password is managed by your sign-in provider." });
+            if (string.IsNullOrEmpty(request.CurrentPassword) || string.IsNullOrEmpty(user.Password)
+                || !BCrypt.Net.BCrypt.Verify(request.CurrentPassword, user.Password))
+            {
+                return BadRequest(new { message = "Current password is incorrect." });
+            }
         }
-
-        if (!BCrypt.Net.BCrypt.Verify(request.CurrentPassword, user.Password))
+        else if (user.AuthProvider != AuthProvider.Google)
         {
-            return BadRequest(new { message = "Current password is incorrect." });
+            return BadRequest(new { message = "Password change is not supported for this account." });
         }
 
         var update = Builders<User>.Update.Set(u => u.Password, BCrypt.Net.BCrypt.HashPassword(request.NewPassword));
@@ -385,6 +389,8 @@ public class AuthController : ControllerBase
             return BadRequest(new { message = "Google Sign-In is not configured." });
         }
 
+        var isBusinessIntent = string.Equals(request.Intent, "business", StringComparison.OrdinalIgnoreCase);
+
         GoogleJsonWebSignature.Payload payload;
         try
         {
@@ -414,7 +420,7 @@ public class AuthController : ControllerBase
                 FullName = string.IsNullOrWhiteSpace(payload.Name) ? normalizedEmail : payload.Name.Trim(),
                 Email = normalizedEmail,
                 Password = null,
-                Role = UserRole.Customer,
+                Role = isBusinessIntent ? UserRole.BusinessOwner : UserRole.Customer,
                 AuthProvider = AuthProvider.Google,
                 GoogleId = payload.Subject
             };
@@ -423,13 +429,29 @@ public class AuthController : ControllerBase
         }
         else if (user.AuthProvider == AuthProvider.Local)
         {
-            return Conflict(new { message = "An account with this email already exists. Sign in with email and password." });
+            if (user.Role == UserRole.BusinessOwner)
+            {
+                var linkUpdate = Builders<User>.Update.Set(u => u.GoogleId, payload.Subject);
+                await _db.Users.UpdateOneAsync(u => u.Id == user.Id, linkUpdate);
+                user.GoogleId = payload.Subject;
+            }
+            else
+            {
+                return Conflict(new { message = "An account with this email already exists. Sign in with email and password." });
+            }
         }
         else if (string.IsNullOrEmpty(user.GoogleId))
         {
             var linkUpdate = Builders<User>.Update.Set(u => u.GoogleId, payload.Subject);
             await _db.Users.UpdateOneAsync(u => u.Id == user.Id, linkUpdate);
             user.GoogleId = payload.Subject;
+        }
+
+        if (isBusinessIntent && user.Role == UserRole.Customer)
+        {
+            var roleUpdate = Builders<User>.Update.Set(u => u.Role, UserRole.BusinessOwner);
+            await _db.Users.UpdateOneAsync(u => u.Id == user.Id, roleUpdate);
+            user.Role = UserRole.BusinessOwner;
         }
 
         var businessId = await ResolveBusinessIdAsync(user);
@@ -447,6 +469,102 @@ public class AuthController : ControllerBase
                 BusinessId = businessId
             }
         });
+    }
+
+    [Authorize]
+    [HttpPost("complete-business-onboarding")]
+    public async Task<ActionResult<AuthResponse>> CompleteBusinessOnboarding(
+        [FromBody] CompleteBusinessOnboardingRequest request)
+    {
+        if (string.IsNullOrEmpty(_currentUser.UserId))
+        {
+            return Unauthorized();
+        }
+
+        var user = await _db.Users
+            .Find(u => u.Id == _currentUser.UserId)
+            .FirstOrDefaultAsync();
+
+        if (user is null || user.Role != UserRole.BusinessOwner)
+        {
+            return BadRequest(new { message = "Only business owners can complete onboarding." });
+        }
+
+        var existingBusiness = await _db.Businesses
+            .Find(b => b.OwnerId == user.Id)
+            .FirstOrDefaultAsync();
+
+        if (existingBusiness is not null)
+        {
+            return Conflict(new { message = "Business onboarding is already complete." });
+        }
+
+        var businessError = ValidateBusinessOnboarding(request.Business);
+        if (businessError is not null)
+        {
+            return BadRequest(new { message = businessError });
+        }
+
+        if (await IsBusinessNameTakenAsync(request.Business.Name))
+        {
+            return Conflict(new { message = "A business with this name already exists." });
+        }
+
+        var business = new Business
+        {
+            OwnerId = user.Id,
+            Name = request.Business.Name.Trim(),
+            Email = request.Business.Email.Trim().ToLowerInvariant(),
+            Phone = string.IsNullOrWhiteSpace(request.Business.Phone) ? null : request.Business.Phone.Trim(),
+            Description = string.IsNullOrWhiteSpace(request.Business.Description) ? null : request.Business.Description.Trim(),
+            Category = string.IsNullOrWhiteSpace(request.Business.Category) ? null : request.Business.Category.Trim(),
+            Image = string.IsNullOrWhiteSpace(request.Business.Image) ? null : request.Business.Image,
+            Services = request.Business.Services
+                .Where(s => !string.IsNullOrWhiteSpace(s.Name))
+                .Select(s => new BusinessService
+                {
+                    Id = ObjectId.GenerateNewId().ToString(),
+                    Name = s.Name.Trim(),
+                    DurationMinutes = s.DurationMinutes
+                })
+                .ToList(),
+            WorkingHours = request.Business.WorkingHours
+                .Select(d => new DaySchedule
+                {
+                    Day = d.Day,
+                    IsOpen = d.IsOpen,
+                    OpenTime = d.IsOpen ? d.OpenTime : null,
+                    CloseTime = d.IsOpen ? d.CloseTime : null
+                })
+                .ToList()
+        };
+
+        await _db.Businesses.InsertOneAsync(business);
+        await ProvisionOwnerStaffAsync(user.Id, business.Id, business.WorkingHours);
+
+        var token = GenerateJwtToken(user, business.Id);
+
+        return Ok(new AuthResponse
+        {
+            Token = token,
+            User = new UserSnapshot
+            {
+                Id = user.Id,
+                FullName = user.FullName,
+                Email = user.Email,
+                Role = user.Role,
+                BusinessId = business.Id
+            }
+        });
+    }
+
+    private async Task ProvisionOwnerStaffAsync(
+        string userId,
+        string businessId,
+        List<DaySchedule> workingHours)
+    {
+        var staffMember = StaffBootstrapHelper.CreateOwnerStaffMember(userId, businessId, workingHours);
+        await _db.StaffMembers.InsertOneAsync(staffMember);
     }
 
     private async Task<string?> ResolveBusinessIdAsync(User user)
