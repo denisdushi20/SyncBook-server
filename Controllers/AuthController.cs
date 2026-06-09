@@ -195,7 +195,8 @@ public class AuthController : ControllerBase
                         OpenTime = d.IsOpen ? d.OpenTime : null,
                         CloseTime = d.IsOpen ? d.CloseTime : null
                     })
-                    .ToList()
+                    .ToList(),
+                SubscriptionStatus = "none"
             };
 
             await _db.Businesses.InsertOneAsync(business);
@@ -232,16 +233,18 @@ public class AuthController : ControllerBase
 
         string? businessId = null;
 
+        Business? business = null;
         if (user.Role == UserRole.BusinessOwner)
         {
-            var business = await _db.Businesses
+            business = await _db.Businesses
                 .Find(b => b.OwnerId == user.Id)
                 .FirstOrDefaultAsync();
 
             businessId = business?.Id;
         }
 
-        var token = GenerateJwtToken(user, businessId);
+        var subscriptionActive = SubscriptionHelper.IsSubscriptionActive(business);
+        var token = GenerateJwtToken(user, businessId, subscriptionActive);
 
         return Ok(new AuthResponse
         {
@@ -252,7 +255,8 @@ public class AuthController : ControllerBase
                 FullName = user.FullName,
                 Email = user.Email,
                 Role = user.Role,
-                BusinessId = businessId
+                BusinessId = businessId,
+                SubscriptionActive = subscriptionActive
             }
         });
     }
@@ -323,7 +327,11 @@ public class AuthController : ControllerBase
         user.FullName = fullName;
 
         var businessId = await ResolveBusinessIdAsync(user);
-        var token = GenerateJwtToken(user, businessId);
+        var business = businessId is null
+            ? null
+            : await _db.Businesses.Find(b => b.Id == businessId).FirstOrDefaultAsync();
+        var subscriptionActive = SubscriptionHelper.IsSubscriptionActive(business);
+        var token = GenerateJwtToken(user, businessId, subscriptionActive);
 
         return Ok(new AuthResponse
         {
@@ -334,7 +342,8 @@ public class AuthController : ControllerBase
                 FullName = user.FullName,
                 Email = user.Email,
                 Role = user.Role,
-                BusinessId = businessId
+                BusinessId = businessId,
+                SubscriptionActive = subscriptionActive
             }
         });
     }
@@ -525,7 +534,11 @@ public class AuthController : ControllerBase
         }
 
         var businessId = await ResolveBusinessIdAsync(user);
-        var token = GenerateJwtToken(user, businessId);
+        var business = businessId is null
+            ? null
+            : await _db.Businesses.Find(b => b.Id == businessId).FirstOrDefaultAsync();
+        var subscriptionActive = SubscriptionHelper.IsSubscriptionActive(business);
+        var token = GenerateJwtToken(user, businessId, subscriptionActive);
 
         return Ok(new AuthResponse
         {
@@ -536,7 +549,8 @@ public class AuthController : ControllerBase
                 FullName = user.FullName,
                 Email = user.Email,
                 Role = user.Role,
-                BusinessId = businessId
+                BusinessId = businessId,
+                SubscriptionActive = subscriptionActive
             }
         });
     }
@@ -607,13 +621,15 @@ public class AuthController : ControllerBase
                     OpenTime = d.IsOpen ? d.OpenTime : null,
                     CloseTime = d.IsOpen ? d.CloseTime : null
                 })
-                .ToList()
+                .ToList(),
+            SubscriptionStatus = "none"
         };
 
         await _db.Businesses.InsertOneAsync(business);
         await ProvisionOwnerStaffAsync(user.Id, business.Id, business.WorkingHours);
 
-        var token = GenerateJwtToken(user, business.Id);
+        var subscriptionActive = SubscriptionHelper.IsSubscriptionActive(business);
+        var token = GenerateJwtToken(user, business.Id, subscriptionActive);
 
         return Ok(new AuthResponse
         {
@@ -624,7 +640,8 @@ public class AuthController : ControllerBase
                 FullName = user.FullName,
                 Email = user.Email,
                 Role = user.Role,
-                BusinessId = business.Id
+                BusinessId = business.Id,
+                SubscriptionActive = subscriptionActive
             }
         });
     }
@@ -755,7 +772,7 @@ public class AuthController : ControllerBase
         await _db.PasswordResetTokens.UpdateOneAsync(t => t.Id == tokenId, update);
     }
 
-    private string GenerateJwtToken(User user, string? businessId)
+    private string GenerateJwtToken(User user, string? businessId, bool subscriptionActive)
     {
         var secretKey = _configuration["Jwt:SecretKey"]
             ?? throw new InvalidOperationException("Jwt:SecretKey is not configured.");
@@ -774,6 +791,7 @@ public class AuthController : ControllerBase
         if (!string.IsNullOrEmpty(businessId))
         {
             claims.Add(new Claim("businessId", businessId));
+            claims.Add(new Claim("subscriptionActive", subscriptionActive ? "true" : "false"));
         }
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));

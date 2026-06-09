@@ -224,6 +224,11 @@ public class AppointmentsController : ControllerBase
 
         await _db.Appointments.InsertOneAsync(appointment);
 
+        await _availabilityDispatcher.DispatchAsync(
+            appointment.BusinessId,
+            appointment.StartUtc,
+            appointment.EndUtc);
+
         var staffUser = await _db.Users.Find(u => u.Id == staff.UserId).FirstOrDefaultAsync();
         return Ok(BusinessMapper.ToDto(appointment, staffUser?.FullName));
     }
@@ -267,6 +272,11 @@ public class AppointmentsController : ControllerBase
                 Builders<Appointment>.Update.Set(a => a.Status, AppointmentStatus.Completed));
 
             appointment.Status = AppointmentStatus.Completed;
+
+            await _availabilityDispatcher.DispatchAsync(
+                appointment.BusinessId,
+                appointment.StartUtc,
+                appointment.EndUtc);
         }
         else if (appointment.Status == AppointmentStatus.Pending)
         {

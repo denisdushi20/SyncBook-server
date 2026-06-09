@@ -29,7 +29,8 @@ public static class BusinessMapper
         Category = business.Category,
         Image = business.Image,
         Services = NormalizeServices(business.Services),
-        WorkingHours = business.WorkingHours ?? []
+        WorkingHours = business.WorkingHours ?? [],
+        IsLive = business.IsLive ?? true
     };
 
     public static AppointmentDto ToDto(Appointment appointment, string? staffName = null) => new()

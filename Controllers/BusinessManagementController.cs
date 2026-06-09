@@ -18,11 +18,16 @@ public class BusinessManagementController : ControllerBase
 {
     private readonly MongoDbContext _db;
     private readonly CurrentUserService _currentUser;
+    private readonly AvailabilityChangeDispatcher _availabilityDispatcher;
 
-    public BusinessManagementController(MongoDbContext db, CurrentUserService currentUser)
+    public BusinessManagementController(
+        MongoDbContext db,
+        CurrentUserService currentUser,
+        AvailabilityChangeDispatcher availabilityDispatcher)
     {
         _db = db;
         _currentUser = currentUser;
+        _availabilityDispatcher = availabilityDispatcher;
     }
 
     [HttpGet]
@@ -68,6 +73,26 @@ public class BusinessManagementController : ControllerBase
             Builders<Business>.Update.Set(b => b.WorkingHours, workingHours));
 
         business.WorkingHours = workingHours;
+        await _availabilityDispatcher.DispatchConfigChangedAsync(business.Id, workingHours);
+        return Ok(BusinessMapper.ToPublicDto(business));
+    }
+
+    [HttpPatch("live")]
+    public async Task<ActionResult<BusinessPublicDto>> UpdateLiveStatus(
+        [FromBody] UpdateBusinessLiveStatusRequest request)
+    {
+        var business = await FindOwnedBusinessAsync();
+        if (business is null)
+        {
+            return NotFound(new { message = "Business not found." });
+        }
+
+        await _db.Businesses.UpdateOneAsync(
+            b => b.Id == business.Id,
+            Builders<Business>.Update.Set(b => b.IsLive, request.IsLive));
+
+        business.IsLive = request.IsLive;
+        await _availabilityDispatcher.DispatchStatusChangedAsync(business.Id, request.IsLive);
         return Ok(BusinessMapper.ToPublicDto(business));
     }
 

@@ -21,4 +21,6 @@ public class BusinessPublicDto
     public List<BusinessService> Services { get; set; } = [];
 
     public List<DaySchedule> WorkingHours { get; set; } = [];
+
+    public bool IsLive { get; set; }
 }

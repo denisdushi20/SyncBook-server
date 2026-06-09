@@ -49,4 +49,10 @@ public class MongoDbContext
 
     public IMongoCollection<BookingNotification> BookingNotifications =>
         _database.GetCollection<BookingNotification>("bookingnotifications");
+
+    public IMongoCollection<SupportChatThread> SupportChatThreads =>
+        _database.GetCollection<SupportChatThread>("supportchatthreads");
+
+    public IMongoCollection<SupportChatMessage> SupportChatMessages =>
+        _database.GetCollection<SupportChatMessage>("supportchatmessages");
 }

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.SignalR;
 using SyncBook.Server.Hubs;
+using SyncBook.Server.Models;
 using SyncBook.Server.Models.Dtos;
 
 namespace SyncBook.Server.Services;
@@ -25,5 +26,19 @@ public class AvailabilityChangeDispatcher
         await _hubContext.Clients
             .Group($"availability:{businessId}")
             .SendAsync("AvailabilityChanged", payload);
+    }
+
+    public Task DispatchConfigChangedAsync(string businessId, List<DaySchedule> workingHours)
+    {
+        return _hubContext.Clients
+            .Group($"availability:{businessId}")
+            .SendAsync("BusinessConfigChanged", businessId, workingHours);
+    }
+
+    public Task DispatchStatusChangedAsync(string businessId, bool isLive)
+    {
+        return _hubContext.Clients
+            .Group($"availability:{businessId}")
+            .SendAsync("BusinessStatusChanged", businessId, isLive);
     }
 }

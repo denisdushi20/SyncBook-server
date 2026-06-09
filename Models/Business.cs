@@ -28,4 +28,16 @@ public class Business
     public List<BusinessService> Services { get; set; } = [];
 
     public List<DaySchedule> WorkingHours { get; set; } = [];
+
+    public bool? IsLive { get; set; }
+
+    public string? SelectedPlan { get; set; }
+
+    public string? StripeCustomerId { get; set; }
+
+    public string? StripeSubscriptionId { get; set; }
+
+    public string? SubscriptionStatus { get; set; }
+
+    public DateTime? SubscriptionPaidAt { get; set; }
 }

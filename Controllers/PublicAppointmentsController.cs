@@ -53,6 +53,11 @@ public class PublicAppointmentsController : ControllerBase
             return NotFound(new { message = "Business not found." });
         }
 
+        if (!(business.IsLive ?? true))
+        {
+            return StatusCode(403, new { message = "This business is currently offline and not accepting bookings." });
+        }
+
         var service = AppointmentSchedulingHelper.FindService(business, request.ServiceId);
         if (service is null)
         {

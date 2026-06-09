@@ -20,6 +20,8 @@ public class UserSnapshot
     public UserRole Role { get; set; }
 
     public string? BusinessId { get; set; }
+
+    public bool SubscriptionActive { get; set; } = true;
 }
 
 public class RegisterResponse

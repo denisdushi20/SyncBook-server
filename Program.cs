@@ -6,6 +6,7 @@ using Microsoft.IdentityModel.Tokens;
 using SyncBook.Server.Authorization;
 using SyncBook.Server.Data;
 using SyncBook.Server.Hubs;
+using Stripe;
 using SyncBook.Server.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -22,6 +23,7 @@ builder.Services.AddScoped<IEmailService, SmtpEmailService>();
 builder.Services.AddScoped<IAuthorizationHandler, BusinessOwnerAuthorizationHandler>();
 builder.Services.AddScoped<BookingAlertDispatcher>();
 builder.Services.AddScoped<AvailabilityChangeDispatcher>();
+builder.Services.AddScoped<SupportChatDispatcher>();
 builder.Services.AddScoped<AnalyticsQueryService>();
 builder.Services.AddSignalR();
 builder.Services.AddControllers()
@@ -83,6 +85,12 @@ builder.Services.AddCors(options =>
             .AllowCredentials();
     });
 });
+
+var stripeSecretKey = builder.Configuration["Stripe:SecretKey"];
+if (!string.IsNullOrWhiteSpace(stripeSecretKey))
+{
+    StripeConfiguration.ApiKey = stripeSecretKey;
+}
 
 var app = builder.Build();
 
