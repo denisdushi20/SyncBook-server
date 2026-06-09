@@ -46,4 +46,7 @@ public class MongoDbContext
 
     public IMongoCollection<VerificationCode> VerificationCodes =>
         _database.GetCollection<VerificationCode>("verificationCodes");
+
+    public IMongoCollection<BookingNotification> BookingNotifications =>
+        _database.GetCollection<BookingNotification>("bookingnotifications");
 }

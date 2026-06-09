@@ -90,7 +90,8 @@ public class BusinessManagementController : ControllerBase
         {
             Id = ObjectId.GenerateNewId().ToString(),
             Name = request.Name.Trim(),
-            DurationMinutes = request.DurationMinutes
+            DurationMinutes = request.DurationMinutes,
+            Price = request.Price
         });
 
         await _db.Businesses.UpdateOneAsync(
@@ -128,7 +129,8 @@ public class BusinessManagementController : ControllerBase
         {
             Id = serviceId,
             Name = request.Name.Trim(),
-            DurationMinutes = request.DurationMinutes
+            DurationMinutes = request.DurationMinutes,
+            Price = request.Price
         };
 
         await _db.Businesses.UpdateOneAsync(

@@ -3,45 +3,31 @@ using MongoDB.Bson.Serialization.Attributes;
 
 namespace SyncBook.Server.Models;
 
-public enum AppointmentStatus
-{
-    Pending,
-    Confirmed,
-    Cancelled,
-    Completed
-}
-
 [BsonIgnoreExtraElements]
-public class Appointment
+public class BookingNotification
 {
     [BsonId]
     [BsonRepresentation(BsonType.ObjectId)]
     public string Id { get; set; } = string.Empty;
 
     [BsonRepresentation(BsonType.ObjectId)]
+    public string AppointmentId { get; set; } = string.Empty;
+
+    [BsonRepresentation(BsonType.ObjectId)]
     public string BusinessId { get; set; } = string.Empty;
 
     public string CustomerName { get; set; } = string.Empty;
-
-    public string CustomerEmail { get; set; } = string.Empty;
-
-    public string CustomerPhone { get; set; } = string.Empty;
 
     [BsonRepresentation(BsonType.ObjectId)]
     public string ServiceId { get; set; } = string.Empty;
 
     public string ServiceName { get; set; } = string.Empty;
 
-    public decimal? ServicePrice { get; set; }
-
     public DateTime StartUtc { get; set; }
 
     public DateTime EndUtc { get; set; }
 
-    public int BufferMinutes { get; set; }
+    public string Source { get; set; } = string.Empty;
 
-    [BsonRepresentation(BsonType.ObjectId)]
-    public string? StaffId { get; set; }
-
-    public AppointmentStatus Status { get; set; } = AppointmentStatus.Pending;
+    public DateTime CreatedAtUtc { get; set; }
 }

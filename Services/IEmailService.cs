@@ -7,6 +7,12 @@ public interface IEmailService
         string code,
         VerificationEmailPurpose purpose,
         CancellationToken cancellationToken = default);
+
+    Task SendPasswordResetLinkEmailAsync(
+        string toEmail,
+        string resetUrl,
+        bool isInitialSetup,
+        CancellationToken cancellationToken = default);
 }
 
 public enum VerificationEmailPurpose

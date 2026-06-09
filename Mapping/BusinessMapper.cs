@@ -13,7 +13,8 @@ public static class BusinessMapper
             {
                 Id = string.IsNullOrWhiteSpace(s.Id) ? ObjectId.GenerateNewId().ToString() : s.Id,
                 Name = s.Name,
-                DurationMinutes = s.DurationMinutes
+                DurationMinutes = s.DurationMinutes,
+                Price = s.Price
             })
             .ToList();
     }
@@ -40,6 +41,7 @@ public static class BusinessMapper
         CustomerPhone = appointment.CustomerPhone,
         ServiceId = appointment.ServiceId,
         ServiceName = appointment.ServiceName,
+        ServicePrice = appointment.ServicePrice,
         StartUtc = appointment.StartUtc,
         EndUtc = appointment.EndUtc,
         BufferMinutes = appointment.BufferMinutes,

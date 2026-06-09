@@ -18,6 +18,8 @@ public class AppointmentDto
 
     public string ServiceName { get; set; } = string.Empty;
 
+    public decimal? ServicePrice { get; set; }
+
     public DateTime StartUtc { get; set; }
 
     public DateTime EndUtc { get; set; }

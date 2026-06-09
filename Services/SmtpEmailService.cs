@@ -71,6 +71,62 @@ public class SmtpEmailService : IEmailService
         await client.SendMailAsync(message, cancellationToken);
     }
 
+    public async Task SendPasswordResetLinkEmailAsync(
+        string toEmail,
+        string resetUrl,
+        bool isInitialSetup,
+        CancellationToken cancellationToken = default)
+    {
+        var (subject, heading, detail, buttonLabel) = isInitialSetup
+            ? (
+                "SyncBook — Set your password",
+                "Set your password",
+                "Click the button below to create a password so you can also sign in with email and password:",
+                "Set password")
+            : (
+                "SyncBook — Reset your password",
+                "Reset your password",
+                "Click the button below to choose a new password for your SyncBook account:",
+                "Reset password");
+
+        var fromAddress = _configuration["Smtp:From"] ?? string.Empty;
+        using var client = CreateClient();
+        if (client is null || string.IsNullOrWhiteSpace(fromAddress))
+        {
+            _logger.LogWarning(
+                "SMTP is not configured. Password reset link for {Email}: {ResetUrl}",
+                toEmail,
+                resetUrl);
+            return;
+        }
+
+        var htmlBody = $"""
+            <div style="font-family:Inter,Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;">
+              <h2 style="color:#0f766e;margin:0 0 12px;">{heading}</h2>
+              <p style="color:#475569;margin:0 0 20px;">{detail}</p>
+              <div style="text-align:center;margin:24px 0;">
+                <a href="{resetUrl}" style="display:inline-block;background:#0f766e;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;">{buttonLabel}</a>
+              </div>
+              <p style="color:#94a3b8;font-size:13px;margin:20px 0 0;">This link expires in 15 minutes. If you did not request this, you can ignore this email.</p>
+              <p style="color:#94a3b8;font-size:12px;margin:12px 0 0;word-break:break-all;">{resetUrl}</p>
+            </div>
+            """;
+
+        using var message = new MailMessage(fromAddress, toEmail)
+        {
+            Subject = subject,
+            Body = htmlBody,
+            IsBodyHtml = true
+        };
+
+        message.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
+            $"{heading}\n\n{detail}\n\n{resetUrl}\n\nThis link expires in 15 minutes.",
+            null,
+            "text/plain"));
+
+        await client.SendMailAsync(message, cancellationToken);
+    }
+
     private SmtpClient? CreateClient()
     {
         var fromAddress = _configuration["Smtp:From"] ?? string.Empty;

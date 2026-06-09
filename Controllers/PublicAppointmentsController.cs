@@ -13,10 +13,17 @@ namespace SyncBook.Server.Controllers;
 public class PublicAppointmentsController : ControllerBase
 {
     private readonly MongoDbContext _db;
+    private readonly BookingAlertDispatcher _bookingAlertDispatcher;
+    private readonly AvailabilityChangeDispatcher _availabilityDispatcher;
 
-    public PublicAppointmentsController(MongoDbContext db)
+    public PublicAppointmentsController(
+        MongoDbContext db,
+        BookingAlertDispatcher bookingAlertDispatcher,
+        AvailabilityChangeDispatcher availabilityDispatcher)
     {
         _db = db;
+        _bookingAlertDispatcher = bookingAlertDispatcher;
+        _availabilityDispatcher = availabilityDispatcher;
     }
 
     [HttpPost("public")]
@@ -91,6 +98,29 @@ public class PublicAppointmentsController : ControllerBase
             return Conflict(new { message = "No staff members are available for the selected time slot." });
         }
 
+        var freshDayAppointments = await _db.Appointments
+            .Find(a => a.BusinessId == request.BusinessId
+                && a.StartUtc >= dayStart
+                && a.StartUtc < dayEnd
+                && (a.Status == AppointmentStatus.Pending || a.Status == AppointmentStatus.Confirmed))
+            .ToListAsync();
+
+        if (StaffPoolCapacityCalculator.HasLegacyBusinessConflict(freshDayAppointments, startUtc, endUtc))
+        {
+            return Conflict(new { message = "The selected time slot conflicts with an existing appointment." });
+        }
+
+        var recheckedStaff = StaffPoolCapacityCalculator.SelectStaffForBooking(
+            staffMembers,
+            startUtc,
+            endUtc,
+            freshDayAppointments);
+
+        if (recheckedStaff is null)
+        {
+            return Conflict(new { message = "No staff members are available for the selected time slot." });
+        }
+
         var appointment = new Appointment
         {
             BusinessId = request.BusinessId,
@@ -99,7 +129,8 @@ public class PublicAppointmentsController : ControllerBase
             CustomerPhone = request.CustomerPhone.Trim(),
             ServiceId = request.ServiceId,
             ServiceName = service.Name,
-            StaffId = assignedStaff.Id,
+            ServicePrice = service.Price ?? 0,
+            StaffId = recheckedStaff.Id,
             StartUtc = startUtc,
             EndUtc = endUtc,
             BufferMinutes = bufferMinutes,
@@ -108,7 +139,13 @@ public class PublicAppointmentsController : ControllerBase
 
         await _db.Appointments.InsertOneAsync(appointment);
 
-        var staffUser = await _db.Users.Find(u => u.Id == assignedStaff.UserId).FirstOrDefaultAsync();
+        await _bookingAlertDispatcher.DispatchAsync(appointment, "PublicForm");
+        await _availabilityDispatcher.DispatchAsync(
+            appointment.BusinessId,
+            appointment.StartUtc,
+            appointment.EndUtc);
+
+        var staffUser = await _db.Users.Find(u => u.Id == recheckedStaff.UserId).FirstOrDefaultAsync();
         return Ok(BusinessMapper.ToDto(appointment, staffUser?.FullName));
     }
 }

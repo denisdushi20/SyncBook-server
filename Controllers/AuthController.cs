@@ -183,7 +183,8 @@ public class AuthController : ControllerBase
                     {
                         Id = ObjectId.GenerateNewId().ToString(),
                         Name = s.Name.Trim(),
-                        DurationMinutes = s.DurationMinutes
+                        DurationMinutes = s.DurationMinutes,
+                        Price = s.Price
                     })
                     .ToList(),
                 WorkingHours = request.Business.WorkingHours
@@ -275,15 +276,66 @@ public class AuthController : ControllerBase
         }
 
         var businessId = await ResolveBusinessIdAsync(user);
+        var (firstName, lastName) = UserNameHelper.SplitFullName(user.FullName);
 
         return Ok(new UserProfileResponse
         {
             Id = user.Id,
             FullName = user.FullName,
+            FirstName = firstName,
+            LastName = lastName,
             Email = user.Email,
             Role = user.Role,
             AuthProvider = user.AuthProvider,
             BusinessId = businessId
+        });
+    }
+
+    [Authorize]
+    [HttpPut("me")]
+    public async Task<ActionResult<AuthResponse>> UpdateCurrentUser([FromBody] UpdateProfileRequest request)
+    {
+        if (string.IsNullOrEmpty(_currentUser.UserId))
+        {
+            return Unauthorized();
+        }
+
+        var firstName = request.FirstName.Trim();
+        var lastName = request.LastName.Trim();
+
+        if (string.IsNullOrEmpty(firstName) || string.IsNullOrEmpty(lastName))
+        {
+            return BadRequest(new { message = "First name and last name are required." });
+        }
+
+        var user = await _db.Users
+            .Find(u => u.Id == _currentUser.UserId)
+            .FirstOrDefaultAsync();
+
+        if (user is null)
+        {
+            return NotFound(new { message = "User not found." });
+        }
+
+        var fullName = UserNameHelper.JoinFullName(firstName, lastName);
+        var update = Builders<User>.Update.Set(u => u.FullName, fullName);
+        await _db.Users.UpdateOneAsync(u => u.Id == user.Id, update);
+        user.FullName = fullName;
+
+        var businessId = await ResolveBusinessIdAsync(user);
+        var token = GenerateJwtToken(user, businessId);
+
+        return Ok(new AuthResponse
+        {
+            Token = token,
+            User = new UserSnapshot
+            {
+                Id = user.Id,
+                FullName = user.FullName,
+                Email = user.Email,
+                Role = user.Role,
+                BusinessId = businessId
+            }
         });
     }
 
@@ -332,50 +384,68 @@ public class AuthController : ControllerBase
             .Find(u => u.Email == normalizedEmail)
             .FirstOrDefaultAsync();
 
-        if (user is not null && user.AuthProvider == AuthProvider.Local)
+        if (user is not null && CanResetPasswordForUser(user))
         {
-            await InvalidateActiveCodesAsync(normalizedEmail, VerificationCodePurpose.PasswordReset);
-            var code = VerificationCodeGenerator.GenerateSixDigitCode();
-            await _db.VerificationCodes.InsertOneAsync(new VerificationCode
+            await InvalidateActiveResetTokensAsync(user.Id);
+            var rawToken = PasswordResetTokenGenerator.GenerateUrlSafeToken();
+            await _db.PasswordResetTokens.InsertOneAsync(new PasswordResetToken
             {
-                Email = normalizedEmail,
-                Purpose = VerificationCodePurpose.PasswordReset,
                 UserId = user.Id,
-                CodeHash = BCrypt.Net.BCrypt.HashPassword(code),
+                TokenHash = BCrypt.Net.BCrypt.HashPassword(rawToken),
                 ExpiresAt = DateTime.UtcNow.AddMinutes(15)
             });
 
-            await _emailService.SendVerificationCodeEmailAsync(
+            var frontendBaseUrl = (_configuration["App:FrontendBaseUrl"] ?? "http://localhost:4200").TrimEnd('/');
+            var resetUrl = $"{frontendBaseUrl}/reset-password?token={Uri.EscapeDataString(rawToken)}";
+            var isInitialSetup = user.AuthProvider == AuthProvider.Google && string.IsNullOrEmpty(user.Password);
+
+            await _emailService.SendPasswordResetLinkEmailAsync(
                 normalizedEmail,
-                code,
-                VerificationEmailPurpose.PasswordReset);
+                resetUrl,
+                isInitialSetup);
         }
 
-        return Ok(new { message = "If an account exists for that email, a verification code has been sent." });
+        return Ok(new { message = "If an account exists for that email, a reset link has been sent." });
+    }
+
+    [HttpGet("validate-reset-token")]
+    public async Task<IActionResult> ValidateResetToken([FromQuery] string token)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return BadRequest(new { valid = false, message = "Reset link is invalid or has expired." });
+        }
+
+        var matched = await FindValidResetTokenAsync(token);
+        if (matched is null)
+        {
+            return BadRequest(new { valid = false, message = "Reset link is invalid or has expired." });
+        }
+
+        return Ok(new { valid = true });
     }
 
     [HttpPost("reset-password")]
     public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest request)
     {
-        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
-        var matched = await FindValidCodeAsync(normalizedEmail, VerificationCodePurpose.PasswordReset, request.Code);
+        var matched = await FindValidResetTokenAsync(request.Token);
         if (matched is null)
         {
-            return BadRequest(new { message = "Invalid or expired verification code." });
+            return BadRequest(new { message = "Reset link is invalid or has expired." });
         }
 
         var user = await _db.Users
             .Find(u => u.Id == matched.UserId)
             .FirstOrDefaultAsync();
 
-        if (user is null || user.AuthProvider != AuthProvider.Local)
+        if (user is null || !CanResetPasswordForUser(user))
         {
             return BadRequest(new { message = "Unable to reset password for this account." });
         }
 
         var passwordUpdate = Builders<User>.Update.Set(u => u.Password, BCrypt.Net.BCrypt.HashPassword(request.NewPassword));
         await _db.Users.UpdateOneAsync(u => u.Id == user.Id, passwordUpdate);
-        await MarkCodeUsedAsync(matched.Id);
+        await MarkResetTokenUsedAsync(matched.Id);
 
         return Ok(new { message = "Password has been reset. You can sign in now." });
     }
@@ -525,7 +595,8 @@ public class AuthController : ControllerBase
                 {
                     Id = ObjectId.GenerateNewId().ToString(),
                     Name = s.Name.Trim(),
-                    DurationMinutes = s.DurationMinutes
+                    DurationMinutes = s.DurationMinutes,
+                    Price = s.Price
                 })
                 .ToList(),
             WorkingHours = request.Business.WorkingHours
@@ -651,6 +722,37 @@ public class AuthController : ControllerBase
     {
         var update = Builders<VerificationCode>.Update.Set(c => c.UsedAt, DateTime.UtcNow);
         await _db.VerificationCodes.UpdateOneAsync(c => c.Id == codeId, update);
+    }
+
+    private static bool CanResetPasswordForUser(User user)
+    {
+        return user.AuthProvider == AuthProvider.Local
+            || user.AuthProvider == AuthProvider.Google;
+    }
+
+    private async Task InvalidateActiveResetTokensAsync(string userId)
+    {
+        var filter = Builders<PasswordResetToken>.Filter.And(
+            Builders<PasswordResetToken>.Filter.Eq(t => t.UserId, userId),
+            Builders<PasswordResetToken>.Filter.Eq(t => t.UsedAt, null));
+
+        var update = Builders<PasswordResetToken>.Update.Set(t => t.UsedAt, DateTime.UtcNow);
+        await _db.PasswordResetTokens.UpdateManyAsync(filter, update);
+    }
+
+    private async Task<PasswordResetToken?> FindValidResetTokenAsync(string rawToken)
+    {
+        var tokens = await _db.PasswordResetTokens
+            .Find(t => t.UsedAt == null && t.ExpiresAt > DateTime.UtcNow)
+            .ToListAsync();
+
+        return tokens.FirstOrDefault(t => BCrypt.Net.BCrypt.Verify(rawToken, t.TokenHash));
+    }
+
+    private async Task MarkResetTokenUsedAsync(string tokenId)
+    {
+        var update = Builders<PasswordResetToken>.Update.Set(t => t.UsedAt, DateTime.UtcNow);
+        await _db.PasswordResetTokens.UpdateOneAsync(t => t.Id == tokenId, update);
     }
 
     private string GenerateJwtToken(User user, string? businessId)
